@@ -1,0 +1,139 @@
+// Protocol Buffer definition for Video Streaming Platform
+
+syntax = "proto3";
+
+package video;
+
+// Video Service - handles video operations between services
+service VideoService {
+  // Get video information
+  rpc GetVideo(VideoRequest) returns (VideoResponse);
+  
+  // Update video status
+  rpc UpdateVideoStatus(UpdateStatusRequest) returns (StatusResponse);
+  
+  // Get video file chunks for streaming
+  rpc GetVideoChunks(ChunkRequest) returns (stream VideoChunk);
+  
+  // Report transcoding progress
+  rpc ReportTranscodeProgress(TranscodeProgressRequest) returns (StatusResponse);
+  
+  // Get transcoding queue status
+  rpc GetQueueStatus(QueueStatusRequest) returns (QueueStatusResponse);
+  
+  // List videos with pagination
+  rpc ListVideos(ListVideosRequest) returns (ListVideosResponse);
+  
+  // Search videos
+  rpc SearchVideos(SearchVideosRequest) returns (ListVideosResponse);
+  
+  // Get video statistics
+  rpc GetVideoStats(VideoRequest) returns (VideoStatsResponse);
+  
+  // Batch update video status
+  rpc BatchUpdateStatus(BatchUpdateStatusRequest) returns (BatchStatusResponse);
+}
+
+// Message definitions
+message VideoRequest {
+  string video_id = 1;
+  bool include_metadata = 2;
+}
+
+message VideoResponse {
+  string video_id = 1;
+  string title = 2;
+  string filename = 3;
+  int64 file_size = 4;
+  string status = 5;
+  string mime_type = 6;
+  string created_at = 7;
+  map<string, string> metadata = 8;
+}
+
+message UpdateStatusRequest {
+  string video_id = 1;
+  string status = 2;
+  string worker_id = 3;
+  string message = 4;
+}
+
+message StatusResponse {
+  bool success = 1;
+  string message = 2;
+  string timestamp = 3;
+}
+
+message ChunkRequest {
+  string video_id = 1;
+  int64 offset = 2;
+  int32 chunk_size = 3;
+  string quality = 4;  // e.g., "720p", "1080p"
+}
+
+message VideoChunk {
+  bytes data = 1;
+  int64 offset = 2;
+  int32 size = 3;
+  bool is_last = 4;
+}
+
+message TranscodeProgressRequest {
+  string video_id = 1;
+  string worker_id = 2;
+  int32 progress_percent = 3;
+  string current_quality = 4;
+  string message = 5;
+}
+
+message QueueStatusRequest {
+  string queue_name = 1;
+}
+
+message QueueStatusResponse {
+  int32 pending_jobs = 1;
+  int32 active_workers = 2;
+  repeated string video_ids = 3;
+}
+
+message ListVideosRequest {
+  int32 page = 1;
+  int32 per_page = 2;
+  string status = 3;
+  string uploader_id = 4;
+  string category = 5;
+}
+
+message ListVideosResponse {
+  repeated VideoResponse videos = 1;
+  int32 total = 2;
+  int32 page = 3;
+  int32 per_page = 4;
+}
+
+message SearchVideosRequest {
+  string query = 1;
+  int32 page = 2;
+  int32 per_page = 3;
+}
+
+message VideoStatsResponse {
+  string video_id = 1;
+  int64 view_count = 2;
+  int64 like_count = 3;
+  int64 total_bytes_served = 4;
+  int64 total_requests = 5;
+  map<string, int64> quality_stats = 6;
+}
+
+message BatchUpdateStatusRequest {
+  repeated string video_ids = 1;
+  string status = 2;
+  string worker_id = 3;
+}
+
+message BatchStatusResponse {
+  int32 success_count = 1;
+  int32 failure_count = 2;
+  repeated string failed_video_ids = 3;
+}

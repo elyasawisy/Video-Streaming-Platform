@@ -1,0 +1,24 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application
+COPY src/cdn_edge/ ./src/cdn_edge/
+
+# Create cache directory
+RUN mkdir -p /app/cache
+
+# Expose port
+EXPOSE 9000
+
+# Start edge server
+CMD ["python", "src/cdn_edge/edge_server.py"]

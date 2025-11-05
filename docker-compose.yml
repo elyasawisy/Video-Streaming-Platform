@@ -1,0 +1,210 @@
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: video_postgres
+    environment:
+      POSTGRES_DB: video_streaming
+      POSTGRES_USER: videouser
+      POSTGRES_PASSWORD: videopass
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U videouser"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # RabbitMQ Message Broker
+  rabbitmq:
+    image: rabbitmq:3.12-management-alpine
+    container_name: video_rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    ports:
+      - "5672:5672"   # AMQP
+      - "15672:15672" # Management UI
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: video_redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # HTTP/2 Upload Service
+  upload_service_http2:
+    build:
+      context: .
+      dockerfile: src/upload_service/Dockerfile
+    container_name: upload_http2
+    environment:
+      - DATABASE_URL=postgresql://videouser:videopass@postgres:5432/video_streaming
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+      - REDIS_URL=redis://redis:6379
+      - UPLOAD_DIR=/app/uploads
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./uploads:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Chunked Upload Service
+  upload_service_chunked:
+    build:
+      context: .
+      dockerfile: src/chunked_upload_service/Dockerfile.upload_chunked
+    container_name: upload_chunked
+    environment:
+      - DATABASE_URL=postgresql://videouser:videopass@postgres:5432/video_streaming
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+      - REDIS_URL=redis://redis:6379
+      - UPLOAD_DIR=/app/uploads
+    ports:
+      - "8002:8002"
+    volumes:
+      - ./uploads:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Pull-based Transcoding Worker
+  transcoding_worker_pull:
+    build:
+      context: .
+      dockerfile: src/transcoding_service/Dockerfile.worker_pull
+    environment:
+      - DATABASE_URL=postgresql://videouser:videopass@postgres:5432/video_streaming
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+      - UPLOAD_DIR=/app/uploads
+    volumes:
+      - ./uploads:/app/uploads
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    deploy:
+      mode: replicated
+      replicas: 3
+
+  # Push-based Transcoding Worker
+  transcoding_worker_push:
+    build:
+      context: .
+      dockerfile: src/transcoding_service/Dockerfile.worker_push
+    environment:
+      - DATABASE_URL=postgresql://videouser:videopass@postgres:5432/video_streaming
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+      - UPLOAD_DIR=/app/uploads
+    volumes:
+      - ./uploads:/app/uploads
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    deploy:
+      mode: replicated
+      replicas: 3
+
+  # Streaming Service (with Reverse Proxy Cache)
+  streaming_service:
+    build:
+      context: .
+      dockerfile: src/streaming_service/Dockerfile.streaming
+    container_name: streaming_service
+    environment:
+      - DATABASE_URL=postgresql://videouser:videopass@postgres:5432/video_streaming
+      - REDIS_URL=redis://redis:6379
+      - UPLOAD_DIR=/app/uploads
+    ports:
+      - "8003:8003"
+    volumes:
+      - ./uploads:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # gRPC Service
+  grpc_service:
+    build:
+      context: .
+      dockerfile: src/grpc_services/Dockerfile.grpc
+    container_name: grpc_service
+    environment:
+      - DATABASE_URL=postgresql://videouser:videopass@postgres:5432/video_streaming
+      - REDIS_URL=redis://redis:6379
+    ports:
+      - "50051:50051"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # CDN Edge Servers
+  cdn_edge_1:
+    build:
+      context: .
+      dockerfile: src/cdn_edge/Dockerfile.cdn_edge
+    container_name: cdn_edge_1
+    environment:
+      - EDGE_ID=edge-1
+      - ORIGIN_URL=http://streaming_service:8003
+      - REDIS_URL=redis://redis:6379
+    ports:
+      - "9001:9000"
+    depends_on:
+      - streaming_service
+
+  cdn_edge_2:
+    build:
+      context: .
+      dockerfile: src/cdn_edge/Dockerfile.cdn_edge
+    container_name: cdn_edge_2
+    environment:
+      - EDGE_ID=edge-2
+      - ORIGIN_URL=http://streaming_service:8003
+      - REDIS_URL=redis://redis:6379
+    ports:
+      - "9002:9000"
+    depends_on:
+      - streaming_service
+
+  # Load Balancer (nginx)
+  nginx:
+    image: nginx:alpine
+    container_name: nginx_lb
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./src/load_balancer/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - cdn_edge_1
+      - cdn_edge_2
+
+volumes:
+  postgres_data:

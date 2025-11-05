@@ -1,0 +1,95 @@
+## Quick Start Guide
+
+### 1. Generate gRPC Code
+```bash
+# From project root
+python -m grpc_tools.protoc \
+    -I./src/grpc_services \
+    --python_out=./src/grpc_services \
+    --grpc_python_out=./src/grpc_services \
+    ./src/grpc_services/video.proto
+```
+
+### 2. Start Services with Docker Compose
+```bash
+# Start all services
+docker-compose up -d
+
+# Check services are running
+docker-compose ps
+
+# View logs
+docker-compose logs -f upload_service_http2
+docker-compose logs -f grpc_server
+```
+
+### 3. Test HTTP/2 Upload
+```bash
+# Test upload endpoint
+python test_upload_http2.py
+```
+
+### 4. Test gRPC Service
+```bash
+# Test gRPC client
+python src/grpc_services/client.py
+```
+
+### 5. Manual Testing with cURL
+```bash
+# Upload a video via HTTP/2
+curl -X POST http://localhost:8001/api/v1/upload \
+  -F "video=@test_video.mp4" \
+  -F "title=My Test Video" \
+  -F "uploader_id=user123"
+
+# Check video status
+curl http://localhost:8001/api/v1/videos/{video_id}
+
+# List all videos
+curl http://localhost:8001/api/v1/videos
+
+# Get upload metrics
+curl http://localhost:8001/api/v1/metrics
+```
+
+### 6. Monitor Services
+```bash
+# RabbitMQ Management UI
+http://localhost:15672
+Login: guest/guest
+
+# PostgreSQL
+psql -h localhost -U videouser -d video_streaming
+
+# View video records
+SELECT id, title, status, file_size, upload_method FROM videos;
+```
+
+### Common Issues
+
+**Issue: Port already in use**
+```bash
+# Check what's using the port
+lsof -i :8001
+
+# Kill the process or change port in docker-compose.yml
+```
+
+**Issue: Database connection failed**
+```bash
+# Restart postgres
+docker-compose restart postgres
+
+# Check postgres is healthy
+docker-compose ps postgres
+```
+
+**Issue: gRPC import errors**
+```bash
+# Regenerate proto files
+python -m grpc_tools.protoc \
+    -I./src/grpc_services \
+    --python_out=./src/grpc_services \
+    --grpc_python_out=./src/grpc_services \
+    ./src/grpc_services/video.proto

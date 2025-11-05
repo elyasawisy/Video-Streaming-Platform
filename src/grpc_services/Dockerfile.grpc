@@ -1,0 +1,31 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    postgresql-client \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY src/grpc_services/ ./src/grpc_services/
+COPY src/upload_service/ ./src/upload_service/
+COPY src/shared/ ./src/shared/
+
+# Generate gRPC code
+RUN python -m grpc_tools.protoc \
+    -I./src/grpc_services \
+    --python_out=./src/grpc_services \
+    --grpc_python_out=./src/grpc_services \
+    ./src/grpc_services/video.proto
+
+# Expose gRPC port
+EXPOSE 50051
+
+# Start gRPC server
+CMD ["python", "src/grpc_services/server.py"]

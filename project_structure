@@ -1,0 +1,75 @@
+video-streaming-platform/
+├── README.md
+├── ARCHITECTURE.md
+├── docker-compose.yml
+├── requirements.txt
+├── .env.example
+│
+├── src/
+│   ├── __init__.py
+│   │
+│   ├── upload_service/          # Implementation 1: HTTP/2 Streaming Upload
+│   │   ├── __init__.py
+│   │   ├── app.py               # Flask app
+│   │   ├── routes.py
+│   │   ├── models.py
+│   │   └── config.py
+│   │
+│   ├── chunked_upload_service/  # Implementation 2: Chunked Resumable Upload
+│   │   ├── __init__.py
+│   │   ├── app.py
+│   │   ├── routes.py
+│   │   ├── models.py
+│   │   └── config.py
+│   │
+│   ├── transcoding_service/
+│   │   ├── __init__.py
+│   │   ├── pull_worker.py       # Pull-based (polling queue)
+│   │   ├── push_worker.py       # Push-based (pub-sub)
+│   │   ├── transcoder.py
+│   │   └── config.py
+│   │
+│   ├── streaming_service/
+│   │   ├── __init__.py
+│   │   ├── app.py
+│   │   ├── routes.py
+│   │   └── config.py
+│   │
+│   ├── cdn_edge/                # CDN edge servers
+│   │   ├── __init__.py
+│   │   ├── edge_server.py
+│   │   └── cache_manager.py
+│   │
+│   ├── grpc_services/
+│   │   ├── __init__.py
+│   │   ├── video.proto          # gRPC definitions
+│   │   ├── video_pb2.py         # Generated
+│   │   ├── video_pb2_grpc.py    # Generated
+│   │   └── server.py
+│   │
+│   ├── load_balancer/
+│   │   ├── nginx.conf
+│   │   └── haproxy.cfg
+│   │
+│   └── shared/
+│       ├── __init__.py
+│       ├── database.py
+│       ├── rabbitmq_client.py
+│       └── utils.py
+│
+├── tests/
+│   ├── load_test_http2.py
+│   ├── load_test_chunked.py
+│   ├── load_test_streaming.py
+│   └── test_scenarios.py
+│
+├── results/
+│   └── .gitkeep
+│
+├── benchmarks/
+│   └── .gitkeep
+│
+└── uploads/                     # Local storage for videos
+    ├── raw/
+    ├── transcoded/
+    └── chunks/
