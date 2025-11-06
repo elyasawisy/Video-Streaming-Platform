@@ -3,20 +3,31 @@ Routes for Upload Service
 Separated from app.py for better organization
 """
 import os
+import sys
 import uuid
 import hashlib
 import time
 import json
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if SCRIPT_DIR not in sys.path:
+    sys.path.append(SCRIPT_DIR)
+
+
 from datetime import datetime
 from flask import request, jsonify
 from werkzeug.utils import secure_filename
 from sqlalchemy import or_, func
 
-from upload_service.models import Video, VideoStatus, UploadMetrics
+from models import Video, VideoStatus, UploadMetrics
 
 
-def init_routes(app, db, publish_transcode_job, calculate_file_hash):
+def init_routes(app, Session, publish_transcode_job, calculate_file_hash):
     """Initialize routes with app context"""
+    
+    def get_db():
+        """Get database session from app context"""
+        return app.db
     
     def allowed_file(filename):
         """Check if file extension is allowed"""
@@ -85,8 +96,9 @@ def init_routes(app, db, publish_transcode_job, calculate_file_hash):
             category=category,
             tags=tags
         )
-            db.session.add(video)
-            db.session.commit()
+            db = get_db()
+            db.add(video)
+            db.commit()
         
         # Save file with streaming to handle large files
             app.logger.info(f"Starting upload for video {video_id}: {original_filename}")
@@ -101,7 +113,7 @@ def init_routes(app, db, publish_transcode_job, calculate_file_hash):
             video.file_hash = file_hash
             video.status = VideoStatus.UPLOADED
             video.uploaded_at = datetime.utcnow()
-            db.session.commit()
+            db.commit()
         
         # Calculate metrics
             upload_duration = int((time.time() - start_time) * 1000)
@@ -109,29 +121,29 @@ def init_routes(app, db, publish_transcode_job, calculate_file_hash):
         
         # Store metrics
             metrics = UploadMetrics(
-            id=str(uuid.uuid4()),
-            video_id=video_id,
-            upload_method='http2',
-            file_size=file_size,
-            upload_duration=upload_duration,
-            throughput=throughput
-        )
-            db.session.add(metrics)
-            db.session.commit()
+                id=str(uuid.uuid4()),
+                video_id=video_id,
+                upload_method='http2',
+                file_size=file_size,
+                upload_duration=upload_duration,
+                throughput=throughput
+            )
+            db.add(metrics)
+            db.commit()
         
         # Publish to transcode queue
             job_data = {
-            'video_id': video_id,
-            'filename': filename,
-            'filepath': filepath,
-            'original_filename': original_filename,
-            'file_size': file_size,
-            'upload_method': 'http2'
-        }
+                'video_id': video_id,
+                'filename': filename,
+                'filepath': filepath,
+                'original_filename': original_filename,
+                'file_size': file_size,
+                'upload_method': 'http2'
+            }
         
             if publish_transcode_job(job_data):
                 video.status = VideoStatus.QUEUED
-                db.session.commit()
+                db.commit()
         
             response_data = video.to_dict()
             response_data['upload_duration_ms'] = upload_duration
@@ -152,7 +164,8 @@ def init_routes(app, db, publish_transcode_job, calculate_file_hash):
                 os.remove(filepath)
         
             try:
-                db.session.rollback()
+                if hasattr(db, 'rollback'):
+                    db.rollback()
             except:
                 pass
         
@@ -167,7 +180,8 @@ def init_routes(app, db, publish_transcode_job, calculate_file_hash):
     def get_video_status(video_id):
         """Get video upload and processing status"""
         try:
-            video = db.session.query(Video).filter(Video.id == video_id).first()
+            db = get_db()
+            video = db.query(Video).filter(Video.id == video_id).first()
             
             if not video:
                 return jsonify({'error': 'Video not found'}), 404
@@ -195,7 +209,8 @@ def init_routes(app, db, publish_transcode_job, calculate_file_hash):
             category = request.args.get('category', None)
             search = request.args.get('search', None)
             
-            query = db.session.query(Video)
+            db = get_db()
+            query = db.query(Video)
             
             # Filters
             if status:
@@ -247,7 +262,8 @@ def init_routes(app, db, publish_transcode_job, calculate_file_hash):
     def update_video(video_id):
         """Update video metadata"""
         try:
-            video = db.session.query(Video).filter(Video.id == video_id).first()
+            db = get_db()
+            video = db.query(Video).filter(Video.id == video_id).first()
             
             if not video:
                 return jsonify({'error': 'Video not found'}), 404
@@ -266,7 +282,7 @@ def init_routes(app, db, publish_transcode_job, calculate_file_hash):
             if 'is_public' in data:
                 video.is_public = data['is_public']
             
-            db.session.commit()
+            db.commit()
             
             return jsonify({
                 'success': True,
@@ -276,7 +292,8 @@ def init_routes(app, db, publish_transcode_job, calculate_file_hash):
             
         except Exception as e:
             app.logger.error(f"Error updating video: {str(e)}")
-            db.session.rollback()
+            if hasattr(db, 'rollback'):
+                db.rollback()
             return jsonify({'error': 'Internal server error'}), 500
 
 
@@ -284,7 +301,8 @@ def init_routes(app, db, publish_transcode_job, calculate_file_hash):
     def delete_video(video_id):
         """Soft delete a video"""
         try:
-            video = db.session.query(Video).filter(Video.id == video_id).first()
+            db = get_db()
+            video = db.query(Video).filter(Video.id == video_id).first()
             
             if not video:
                 return jsonify({'error': 'Video not found'}), 404
@@ -293,7 +311,7 @@ def init_routes(app, db, publish_transcode_job, calculate_file_hash):
             video.status = VideoStatus.DELETED
             video.deleted_at = datetime.utcnow()
             
-            db.session.commit()
+            db.commit()
             
             return jsonify({
                 'success': True,
@@ -302,7 +320,8 @@ def init_routes(app, db, publish_transcode_job, calculate_file_hash):
             
         except Exception as e:
             app.logger.error(f"Error deleting video: {str(e)}")
-            db.session.rollback()
+            if hasattr(db, 'rollback'):
+                db.rollback()
             return jsonify({'error': 'Internal server error'}), 500
 
 
@@ -310,6 +329,7 @@ def init_routes(app, db, publish_transcode_job, calculate_file_hash):
     def search_videos():
         """Search videos by title or description"""
         try:
+            db = get_db()
             query_term = request.args.get('q', '')
             page = request.args.get('page', 1, type=int)
             per_page = request.args.get('per_page', 20, type=int)
@@ -318,7 +338,7 @@ def init_routes(app, db, publish_transcode_job, calculate_file_hash):
                 return jsonify({'error': 'Search query required'}), 400
             
             search_term = f"%{query_term}%"
-            query = db.session.query(Video).filter(
+            query = db.query(Video).filter(
                 or_(
                     Video.title.ilike(search_term),
                     Video.description.ilike(search_term)
@@ -349,7 +369,8 @@ def init_routes(app, db, publish_transcode_job, calculate_file_hash):
     def get_metrics():
         """Get upload metrics for analysis"""
         try:
-            metrics = db.session.query(UploadMetrics).filter(
+            db = get_db()
+            metrics = db.query(UploadMetrics).filter(
                 UploadMetrics.upload_method == 'http2'
             ).order_by(UploadMetrics.created_at.desc()).limit(100).all()
             
@@ -381,6 +402,8 @@ def init_routes(app, db, publish_transcode_job, calculate_file_hash):
             
         except Exception as e:
             app.logger.error(f"Error fetching metrics: {str(e)}")
+            if hasattr(db, 'rollback'):
+                db.rollback()
             return jsonify({'error': 'Internal server error'}), 500
 
 

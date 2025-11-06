@@ -1,0 +1,123 @@
+# docker-compose.prod.yml
+# Production-specific overrides
+version: '3.8'
+
+services:
+  postgres:
+    environment:
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+    secrets:
+      - db_password
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U videouser"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  redis:
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD}
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 2G
+    secrets:
+      - redis_password
+
+  rabbitmq:
+    environment:
+      RABBITMQ_DEFAULT_USER_FILE: /run/secrets/rabbitmq_user
+      RABBITMQ_DEFAULT_PASS_FILE: /run/secrets/rabbitmq_password
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 2G
+    secrets:
+      - rabbitmq_user
+      - rabbitmq_password
+
+  upload_service_http2:
+    build:
+      target: production
+    deploy:
+      replicas: 3
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+    secrets:
+      - db_password
+      - redis_password
+      - rabbitmq_password
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  upload_service_chunked:
+    build:
+      target: production
+    deploy:
+      replicas: 3
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+    secrets:
+      - db_password
+      - redis_password
+      - rabbitmq_password
+
+  streaming_service:
+    build:
+      target: production
+    deploy:
+      replicas: 3
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+    secrets:
+      - db_password
+      - redis_password
+
+  transcoding_worker_pull:
+    deploy:
+      replicas: 5
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+    secrets:
+      - db_password
+      - rabbitmq_password
+
+  transcoding_worker_push:
+    deploy:
+      replicas: 5
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+    secrets:
+      - db_password
+      - rabbitmq_password
+
+secrets:
+  db_password:
+    external: true
+  redis_password:
+    external: true
+  rabbitmq_user:
+    external: true
+  rabbitmq_password:
+    external: true

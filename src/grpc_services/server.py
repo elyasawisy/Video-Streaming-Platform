@@ -44,10 +44,21 @@ logger = logging.getLogger(__name__)
 
 # Configuration
 DATABASE_URL = os.getenv('DATABASE_URL', 'postgresql://videouser:videopass@localhost:5432/video_streaming')
-GRPC_PORT = os.getenv('GRPC_PORT', '50051')
+GRPC_HOST = os.getenv('GRPC_HOST', '127.0.0.1')  # Default to localhost IPv4
+GRPC_PORT = int(os.getenv('GRPC_PORT', '50051'))
 UPLOAD_DIR = os.getenv('UPLOAD_DIR', './uploads')
 MAX_WORKERS = int(os.getenv('GRPC_MAX_WORKERS', '10'))
 MAX_MESSAGE_LENGTH = int(os.getenv('GRPC_MAX_MESSAGE_LENGTH', 100 * 1024 * 1024))  # 100MB
+
+def is_port_in_use(port, host='127.0.0.1'):
+    """Check if a port is in use"""
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind((host, port))
+            return False
+        except socket.error:
+            return True
 
 # Prometheus metrics
 GRPC_REQUESTS = prom.Counter(
@@ -395,8 +406,31 @@ def initialize_health_checks(health_servicer: health.HealthServicer):
 
 def serve():
     """Start the gRPC server with metrics and health checking"""
-    # Start Prometheus metrics server
-    prom.start_http_server(8000)
+    global GRPC_PORT
+    
+    # Check if primary port is available
+    if is_port_in_use(GRPC_PORT, GRPC_HOST):
+        logger.error(f"Port {GRPC_PORT} is already in use on {GRPC_HOST}")
+        # Try to find an available port
+        for port in range(GRPC_PORT + 1, GRPC_PORT + 10):
+            if not is_port_in_use(port, GRPC_HOST):
+                logger.info(f"Found available port: {port}")
+                GRPC_PORT = port
+                break
+        else:
+            logger.error(f"No available ports found in range {GRPC_PORT}-{GRPC_PORT + 9}")
+            return
+
+    # Start Prometheus metrics server on next available port
+    for metrics_port in range(8000, 8010):
+        if not is_port_in_use(metrics_port):
+            try:
+                prom.start_http_server(metrics_port)
+                logger.info(f"Metrics server started on port {metrics_port}")
+                break
+            except Exception as e:
+                logger.warning(f"Failed to start metrics server on port {metrics_port}: {e}")
+                continue
     
     # Configure server with interceptors and options
     server = grpc.server(
@@ -421,18 +455,14 @@ def serve():
     initialize_health_checks(health_servicer)
     
     # Start server
+    server_address = f"{GRPC_HOST}:{GRPC_PORT}"
     try:
-        # Try IPv6 first
-        port = f'[::]:{GRPC_PORT}'
-        server.add_insecure_port(port)
-    except RuntimeError:
-        # Fall back to IPv4
-        port = f'0.0.0.0:{GRPC_PORT}'
-        try:
-            server.add_insecure_port(port)
-        except RuntimeError as e:
-            logger.error(f"Failed to bind to port {GRPC_PORT}. Error: {e}")
-            return
+        server.add_insecure_port(server_address)
+        server.start()
+        logger.info(f"gRPC server started on {server_address}")
+    except Exception as e:
+        logger.error(f"Failed to start server on {server_address}: {e}")
+        return
 
     server.start()
     

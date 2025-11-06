@@ -400,6 +400,9 @@ os.makedirs(Config.RAW_DIR, exist_ok=True)
 # Redis for chunk tracking
 redis_client = redis.from_url(Config.REDIS_URL, decode_responses=True)
 
+# Initialize chunk manager
+chunk_manager = ChunkManager(redis_client)
+
 # RabbitMQ Connection
 def get_rabbitmq_connection():
     """Create RabbitMQ connection and channel"""
@@ -436,6 +439,56 @@ def publish_transcode_job(video_data):
     except Exception as e:
         app.logger.error(f"Failed to publish job: {e}")
         return False
+
+def is_chunk_uploaded(upload_id: str, chunk_number: int) -> bool:
+    """Check if a chunk has been uploaded."""
+    metadata = chunk_manager.get_chunk_metadata(upload_id, chunk_number)
+    return metadata is not None
+
+def get_uploaded_chunks(upload_id: str, total_chunks: int) -> List[int]:
+    """Get list of uploaded chunk numbers."""
+    uploaded = []
+    for i in range(1, total_chunks + 1):
+        if is_chunk_uploaded(upload_id, i):
+            uploaded.append(i)
+    return uploaded
+
+def cleanup_upload(upload_id: str) -> None:
+    """Clean up chunks after successful upload."""
+    try:
+        # Remove chunk files
+        chunk_dir = os.path.join(Config.CHUNKS_DIR, upload_id)
+        if os.path.exists(chunk_dir):
+            for file in os.listdir(chunk_dir):
+                try:
+                    os.remove(os.path.join(chunk_dir, file))
+                except OSError as e:
+                    logger.error(f"Error deleting chunk file: {e}")
+            try:
+                os.rmdir(chunk_dir)
+            except OSError as e:
+                logger.error(f"Error deleting chunk directory: {e}")
+
+        # Remove Redis keys
+        keys_to_delete = [
+            f"upload:{upload_id}",
+            *redis_client.keys(f"chunk:{upload_id}:*")
+        ]
+        if keys_to_delete:
+            redis_client.delete(*keys_to_delete)
+
+        logger.info(f"Cleaned up upload {upload_id}")
+    except Exception as e:
+        logger.error(f"Error cleaning up upload {upload_id}: {e}")
+
+def calculate_file_hash(filepath: str) -> str:
+    """Calculate SHA-256 hash of a file."""
+    sha256_hash = hashlib.sha256()
+    with open(filepath, "rb") as f:
+        # Read file in chunks to handle large files
+        for byte_block in iter(lambda: f.read(4096), b""):
+            sha256_hash.update(byte_block)
+    return sha256_hash.hexdigest()
 
 def allowed_file(filename: str) -> bool:
     """Check if file has allowed extension and valid name."""
@@ -666,11 +719,17 @@ def upload_chunk():
         chunk_path = os.path.join(chunk_dir, f"chunk_{chunk_number:06d}")
         chunk_file.save(chunk_path)
         
-        # Mark chunk as uploaded
-        mark_chunk_uploaded(upload_id, chunk_number)
+        # Calculate chunk hash and mark as uploaded
+        chunk_size = os.path.getsize(chunk_path)
+        with open(chunk_path, 'rb') as f:
+            chunk_hash = calculate_chunk_hash(f.read())
+        
+        # Mark chunk as uploaded with ChunkManager
+        chunk_manager.mark_chunk_uploaded(upload_id, chunk_number, chunk_size, chunk_hash)
         
         # Update uploaded chunks count
-        upload.uploaded_chunks = len(get_uploaded_chunks(upload_id, upload.total_chunks))
+        uploaded_chunks = get_uploaded_chunks(upload_id, upload.total_chunks)
+        upload.uploaded_chunks = len(uploaded_chunks)
         db.commit()
         db.close()
         

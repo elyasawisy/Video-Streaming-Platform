@@ -1,0 +1,69 @@
+# docker-compose.override.yml
+# Override file for development environment
+version: '3.8'
+
+services:
+  postgres:
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./scripts/init-scripts:/docker-entrypoint-initdb.d/
+    environment:
+      POSTGRES_DB: video_streaming
+      POSTGRES_USER: videouser
+      POSTGRES_PASSWORD: videopass
+
+  redis:
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  rabbitmq:
+    ports:
+      - "5672:5672"   # AMQP
+      - "15672:15672" # Management UI
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+
+  # Development configuration for services
+  upload_service_http2:
+    build:
+      context: .
+      dockerfile: src/upload_service/Dockerfile
+      target: development
+    volumes:
+      - ./src:/app/src
+      - ./uploads:/app/uploads
+    environment:
+      - FLASK_ENV=development
+      - FLASK_DEBUG=1
+      
+  upload_service_chunked:
+    build:
+      context: .
+      dockerfile: src/chunked_upload_service/Dockerfile.upload_chunked
+      target: development
+    volumes:
+      - ./src:/app/src
+      - ./uploads:/app/uploads
+    environment:
+      - FLASK_ENV=development
+      - FLASK_DEBUG=1
+
+  streaming_service:
+    build:
+      context: .
+      dockerfile: src/streaming_service/Dockerfile.streaming
+      target: development
+    volumes:
+      - ./src:/app/src
+      - ./uploads:/app/uploads
+    environment:
+      - FLASK_ENV=development
+      - FLASK_DEBUG=1
+
+volumes:
+  redis_data:
+  rabbitmq_data:

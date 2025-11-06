@@ -3,20 +3,20 @@ HTTP/2 Streaming Upload Service
 Handles large video file uploads using HTTP/2 multiplexing
 """
 import os
+import sys
 import hashlib
 from flask import Flask
 import pika
 import json
 
-from upload_service.config import Config
-from upload_service.models import Base
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if SCRIPT_DIR not in sys.path:
+    sys.path.append(SCRIPT_DIR)
+
+from config import Config
+from models import Base
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, scoped_session
-
-# Database initialization
-engine = create_engine(Config.DATABASE_URL, pool_pre_ping=True)
-Base.metadata.create_all(engine)
-SessionLocal = sessionmaker(bind=engine)
 
 # Flask App
 app = Flask(__name__)
@@ -27,8 +27,26 @@ app.config['UPLOAD_DIR'] = Config.UPLOAD_DIR
 # Ensure upload directory exists
 os.makedirs(Config.UPLOAD_DIR, exist_ok=True)
 
-# Database session
-db = scoped_session(SessionLocal)
+# Database initialization
+engine = create_engine(Config.DATABASE_URL, pool_pre_ping=True)
+Base.metadata.create_all(engine)
+session_factory = sessionmaker(bind=engine)
+Session = scoped_session(session_factory)
+
+# Add session to app context
+app.Session = Session
+
+@app.before_request
+def before_request():
+    """Create session for each request"""
+    if not hasattr(app, 'db'):
+        app.db = Session()
+
+@app.teardown_appcontext
+def shutdown_session(exception=None):
+    """Remove session at end of request"""
+    if hasattr(app, 'db'):
+        Session.remove()
 
 # Helper functions
 def get_rabbitmq_connection():
@@ -80,13 +98,8 @@ def calculate_file_hash(filepath):
     return sha256_hash.hexdigest()
 
 # Import and initialize routes after app is created
-from upload_service.routes import init_routes
-init_routes(app, db, publish_transcode_job, calculate_file_hash)
-
-@app.teardown_appcontext
-def shutdown_session(exception=None):
-    """Remove database session"""
-    db.remove()
+from routes import init_routes
+init_routes(app, Session, publish_transcode_job, calculate_file_hash)
 
 if __name__ == '__main__':
     # For development with HTTP/2, use Hypercorn:
