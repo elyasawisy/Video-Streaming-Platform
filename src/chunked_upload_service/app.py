@@ -1,35 +1,304 @@
-"""
-Chunked Upload Service with Resumability
-Handles large video uploads in chunks with ability to resume on failure
-"""
+"""Enhanced Chunked Upload Service with validation, progress tracking, and cleanup."""
+
 import os
 import uuid
 import hashlib
 import time
 import json
+import logging
 from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Tuple, Union
+from dataclasses import dataclass
+from threading import Lock
 from flask import Flask, request, jsonify
 from werkzeug.utils import secure_filename
 import pika
 import redis
-from sqlalchemy import create_engine, Column, String, Integer, DateTime, BigInteger, Enum, Boolean
+from sqlalchemy import create_engine, Column, String, Integer, DateTime, BigInteger, Enum, Boolean, event
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, scoped_session
+from sqlalchemy.pool import QueuePool
 import enum
+from prometheus_client import Counter, Histogram, start_http_server
 
-# Configuration
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('chunked_upload.log')
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# Prometheus metrics
+UPLOAD_STARTED = Counter('chunked_upload_started_total', 'Total uploads started')
+UPLOAD_COMPLETED = Counter('chunked_upload_completed_total', 'Total uploads completed')
+UPLOAD_FAILED = Counter('chunked_upload_failed_total', 'Total uploads failed')
+CHUNK_UPLOADED = Counter('chunked_upload_chunks_total', 'Total chunks uploaded')
+CHUNK_FAILED = Counter('chunked_upload_chunks_failed_total', 'Total chunks failed')
+UPLOAD_DURATION = Histogram('chunked_upload_duration_seconds', 'Upload duration in seconds')
+CHUNK_SIZE = Histogram('chunked_upload_chunk_size_bytes', 'Chunk size in bytes')
+
+@dataclass
+class ChunkMetadata:
+    """Metadata for a single chunk."""
+    number: int
+    size: int
+    md5: str
+    uploaded_at: datetime
+    retry_count: int = 0
+
 class Config:
+    """Enhanced configuration with validation and metrics settings."""
+    # Database
     DATABASE_URL = os.getenv('DATABASE_URL', 'postgresql://videouser:videopass@localhost:5432/video_streaming')
+    DB_POOL_SIZE = int(os.getenv('DB_POOL_SIZE', 5))
+    DB_MAX_OVERFLOW = int(os.getenv('DB_MAX_OVERFLOW', 10))
+    DB_POOL_TIMEOUT = int(os.getenv('DB_POOL_TIMEOUT', 30))
+    DB_POOL_RECYCLE = int(os.getenv('DB_POOL_RECYCLE', 1800))  # 30 minutes
+
+    # RabbitMQ
     RABBITMQ_URL = os.getenv('RABBITMQ_URL', 'amqp://guest:guest@localhost:5672/')
+    RABBITMQ_QUEUE = os.getenv('RABBITMQ_QUEUE', 'transcode_queue')
+    RABBITMQ_RETRY_QUEUE = os.getenv('RABBITMQ_RETRY_QUEUE', 'transcode_retry')
+    RABBITMQ_DLQ = os.getenv('RABBITMQ_DLQ', 'transcode_dlq')
+    RABBITMQ_EXCHANGE = os.getenv('RABBITMQ_EXCHANGE', 'video_exchange')
+    RABBITMQ_MAX_RETRIES = int(os.getenv('RABBITMQ_MAX_RETRIES', 3))
+
+    # Redis
     REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379')
+    REDIS_TIMEOUT = int(os.getenv('REDIS_TIMEOUT', 5))
+    REDIS_RETRY_INTERVAL = int(os.getenv('REDIS_RETRY_INTERVAL', 1))
+    REDIS_MAX_RETRIES = int(os.getenv('REDIS_MAX_RETRIES', 3))
+
+    # Upload settings
     UPLOAD_DIR = os.getenv('UPLOAD_DIR', './uploads')
     CHUNKS_DIR = os.path.join(UPLOAD_DIR, 'chunks')
     RAW_DIR = os.path.join(UPLOAD_DIR, 'raw')
     MAX_UPLOAD_SIZE = int(os.getenv('MAX_UPLOAD_SIZE', 2 * 1024 * 1024 * 1024))  # 2GB
-    CHUNK_SIZE = 1024 * 1024  # 1MB per chunk
+    MIN_CHUNK_SIZE = 64 * 1024  # 64KB minimum
+    MAX_CHUNK_SIZE = 8 * 1024 * 1024  # 8MB maximum
+    CHUNK_SIZE = 1024 * 1024  # 1MB default
+    MAX_CHUNKS = int(os.getenv('MAX_CHUNKS', 10000))
+    UPLOAD_EXPIRY = int(os.getenv('UPLOAD_EXPIRY', 24 * 3600))  # 24 hours
+    CLEANUP_INTERVAL = int(os.getenv('CLEANUP_INTERVAL', 3600))  # 1 hour
+
+    # File validation
     ALLOWED_EXTENSIONS = {'mp4', 'avi', 'mov', 'mkv', 'flv', 'wmv'}
-    RABBITMQ_QUEUE = 'transcode_queue'
-    UPLOAD_EXPIRY = 24 * 3600  # 24 hours
+    ALLOWED_MIME_TYPES = {
+        'video/mp4', 'video/x-msvideo', 'video/quicktime',
+        'video/x-matroska', 'video/x-flv', 'video/x-ms-wmv'
+    }
+    MAX_FILENAME_LENGTH = 255
+    
+    # Security
+    FILE_HASH_ALGO = 'sha256'
+    CHUNK_HASH_ALGO = 'md5'  # Faster for chunks
+    API_KEY_HEADER = 'X-API-Key'
+
+    # Rate limiting
+    RATE_LIMIT_ENABLED = True
+    RATE_LIMIT_WINDOW = 3600  # 1 hour
+    RATE_LIMIT_MAX_UPLOADS = 100
+    RATE_LIMIT_MAX_CHUNKS = 1000
+
+    # Metrics
+    METRICS_ENABLED = os.getenv('METRICS_ENABLED', 'true').lower() == 'true'
+    METRICS_PORT = int(os.getenv('METRICS_PORT', 9102))
+
+class ChunkManager:
+    """Enhanced chunk management with validation and cleanup."""
+    
+    def __init__(self, redis_client: redis.Redis):
+        self.redis = redis_client
+        self.locks: Dict[str, Lock] = {}
+        self.chunk_locks: Dict[str, Lock] = {}
+
+    def _get_upload_key(self, upload_id: str) -> str:
+        """Get Redis key for upload metadata."""
+        return f"upload:{upload_id}"
+
+    def _get_chunk_key(self, upload_id: str, chunk_number: int) -> str:
+        """Get Redis key for chunk metadata."""
+        return f"chunk:{upload_id}:{chunk_number}"
+
+    def _get_lock(self, key: str) -> Lock:
+        """Get or create a lock for concurrent access."""
+        if key not in self.locks:
+            self.locks[key] = Lock()
+        return self.locks[key]
+
+    def validate_chunk(
+        self,
+        chunk_path: str,
+        expected_size: Optional[int] = None,
+        expected_hash: Optional[str] = None
+    ) -> Tuple[bool, Optional[str]]:
+        """Validate chunk size and hash."""
+        try:
+            if not os.path.exists(chunk_path):
+                return False, "Chunk file not found"
+
+            actual_size = os.path.getsize(chunk_path)
+            
+            if expected_size and actual_size != expected_size:
+                return False, f"Size mismatch: expected {expected_size}, got {actual_size}"
+
+            if expected_hash:
+                with open(chunk_path, 'rb') as f:
+                    chunk_hash = hashlib.md5(f.read()).hexdigest()
+                if chunk_hash != expected_hash:
+                    return False, f"Hash mismatch: expected {expected_hash}, got {chunk_hash}"
+
+            return True, None
+        except Exception as e:
+            return False, str(e)
+
+    def mark_chunk_uploaded(
+        self,
+        upload_id: str,
+        chunk_number: int,
+        chunk_size: int,
+        chunk_hash: str
+    ) -> None:
+        """Mark a chunk as uploaded with metadata."""
+        chunk_key = self._get_chunk_key(upload_id, chunk_number)
+        metadata = ChunkMetadata(
+            number=chunk_number,
+            size=chunk_size,
+            md5=chunk_hash,
+            uploaded_at=datetime.utcnow()
+        )
+        
+        # Store chunk metadata in Redis
+        self.redis.hset(
+            chunk_key,
+            mapping={
+                'size': metadata.size,
+                'md5': metadata.md5,
+                'uploaded_at': metadata.uploaded_at.isoformat(),
+                'retry_count': metadata.retry_count
+            }
+        )
+        self.redis.expire(chunk_key, Config.UPLOAD_EXPIRY)
+
+        # Update upload progress
+        upload_key = self._get_upload_key(upload_id)
+        pipe = self.redis.pipeline()
+        pipe.hincrby(upload_key, 'uploaded_chunks', 1)
+        pipe.hincrby(upload_key, 'uploaded_bytes', chunk_size)
+        pipe.execute()
+
+    def get_chunk_metadata(
+        self,
+        upload_id: str,
+        chunk_number: int
+    ) -> Optional[ChunkMetadata]:
+        """Get metadata for a specific chunk."""
+        chunk_key = self._get_chunk_key(upload_id, chunk_number)
+        data = self.redis.hgetall(chunk_key)
+        
+        if not data:
+            return None
+
+        return ChunkMetadata(
+            number=chunk_number,
+            size=int(data[b'size']),
+            md5=data[b'md5'].decode(),
+            uploaded_at=datetime.fromisoformat(data[b'uploaded_at'].decode()),
+            retry_count=int(data[b'retry_count'])
+        )
+
+    def get_upload_progress(
+        self,
+        upload_id: str,
+        total_chunks: int,
+        total_size: int
+    ) -> Dict[str, Union[int, float, List[int]]]:
+        """Get detailed upload progress."""
+        upload_key = self._get_upload_key(upload_id)
+        data = self.redis.hgetall(upload_key)
+
+        uploaded_chunks = int(data.get(b'uploaded_chunks', 0))
+        uploaded_bytes = int(data.get(b'uploaded_bytes', 0))
+
+        # Get list of missing chunks
+        all_chunks = set(range(1, total_chunks + 1))
+        uploaded_chunk_list = []
+        
+        for i in all_chunks:
+            if self.redis.exists(self._get_chunk_key(upload_id, i)):
+                uploaded_chunk_list.append(i)
+
+        missing_chunks = sorted(all_chunks - set(uploaded_chunk_list))
+
+        return {
+            'total_chunks': total_chunks,
+            'uploaded_chunks': uploaded_chunks,
+            'missing_chunks': missing_chunks,
+            'total_size': total_size,
+            'uploaded_bytes': uploaded_bytes,
+            'progress_percent': (uploaded_bytes / total_size * 100) if total_size > 0 else 0
+        }
+
+    def cleanup_expired_upload(self, upload_id: str) -> None:
+        """Clean up expired upload data and chunks."""
+        try:
+            # Delete chunk files
+            chunk_dir = os.path.join(Config.CHUNKS_DIR, upload_id)
+            if os.path.exists(chunk_dir):
+                for file in os.listdir(chunk_dir):
+                    try:
+                        os.remove(os.path.join(chunk_dir, file))
+                    except OSError as e:
+                        logger.error(f"Error deleting chunk file: {e}")
+                try:
+                    os.rmdir(chunk_dir)
+                except OSError as e:
+                    logger.error(f"Error deleting chunk directory: {e}")
+
+            # Delete Redis keys
+            keys_to_delete = [
+                self._get_upload_key(upload_id),
+                *self.redis.keys(f"chunk:{upload_id}:*")
+            ]
+            if keys_to_delete:
+                self.redis.delete(*keys_to_delete)
+
+            logger.info(f"Cleaned up expired upload {upload_id}")
+        except Exception as e:
+            logger.error(f"Error cleaning up upload {upload_id}: {e}")
+
+    def verify_final_assembly(
+        self,
+        upload_id: str,
+        final_path: str,
+        expected_size: int,
+        chunk_dir: str
+    ) -> Tuple[bool, Optional[str], Optional[str]]:
+        """Verify final assembled file."""
+        try:
+            # Check if file exists
+            if not os.path.exists(final_path):
+                return False, None, "Assembled file not found"
+
+            # Verify size
+            actual_size = os.path.getsize(final_path)
+            if actual_size != expected_size:
+                return False, None, f"Size mismatch: expected {expected_size}, got {actual_size}"
+
+            # Calculate file hash
+            file_hash = hashlib.sha256()
+            with open(final_path, 'rb') as f:
+                for chunk in iter(lambda: f.read(8192), b''):
+                    file_hash.update(chunk)
+            file_hash = file_hash.hexdigest()
+
+            return True, file_hash, None
+        except Exception as e:
+            return False, None, str(e)
 
 # Database Models
 Base = declarative_base()
@@ -168,53 +437,77 @@ def publish_transcode_job(video_data):
         app.logger.error(f"Failed to publish job: {e}")
         return False
 
-def allowed_file(filename):
-    """Check if file extension is allowed"""
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in Config.ALLOWED_EXTENSIONS
-
-def calculate_file_hash(filepath):
-    """Calculate SHA256 hash of file"""
-    sha256_hash = hashlib.sha256()
-    with open(filepath, "rb") as f:
-        for byte_block in iter(lambda: f.read(4096), b""):
-            sha256_hash.update(byte_block)
-    return sha256_hash.hexdigest()
-
-def get_chunk_key(upload_id, chunk_number):
-    """Generate Redis key for chunk tracking"""
-    return f"chunk:{upload_id}:{chunk_number}"
-
-def mark_chunk_uploaded(upload_id, chunk_number):
-    """Mark a chunk as uploaded in Redis"""
-    key = get_chunk_key(upload_id, chunk_number)
-    redis_client.setex(key, Config.UPLOAD_EXPIRY, "1")
-
-def is_chunk_uploaded(upload_id, chunk_number):
-    """Check if chunk is already uploaded"""
-    key = get_chunk_key(upload_id, chunk_number)
-    return redis_client.exists(key)
-
-def get_uploaded_chunks(upload_id, total_chunks):
-    """Get list of uploaded chunk numbers"""
-    uploaded = []
-    for i in range(1, total_chunks + 1):
-        if is_chunk_uploaded(upload_id, i):
-            uploaded.append(i)
-    return uploaded
-
-def cleanup_upload(upload_id):
-    """Clean up chunks and Redis keys for an upload"""
-    # Delete chunks directory
-    chunk_dir = os.path.join(Config.CHUNKS_DIR, upload_id)
-    if os.path.exists(chunk_dir):
-        for file in os.listdir(chunk_dir):
-            os.remove(os.path.join(chunk_dir, file))
-        os.rmdir(chunk_dir)
+def allowed_file(filename: str) -> bool:
+    """Check if file has allowed extension and valid name."""
+    if not filename or '.' not in filename:
+        return False
     
-    # Delete Redis keys
-    pattern = f"chunk:{upload_id}:*"
-    for key in redis_client.scan_iter(match=pattern):
-        redis_client.delete(key)
+    if len(filename) > Config.MAX_FILENAME_LENGTH:
+        return False
+
+    ext = filename.rsplit('.', 1)[1].lower()
+    return ext in Config.ALLOWED_EXTENSIONS
+
+def validate_mime_type(mime_type: str) -> bool:
+    """Check if MIME type is allowed."""
+    return mime_type in Config.ALLOWED_MIME_TYPES
+
+def calculate_chunk_hash(chunk_data: bytes) -> str:
+    """Calculate MD5 hash of chunk data."""
+    return hashlib.md5(chunk_data).hexdigest()
+
+def validate_chunk_size(chunk_size: int) -> Tuple[bool, Optional[str]]:
+    """Validate chunk size is within allowed range."""
+    if chunk_size < Config.MIN_CHUNK_SIZE:
+        return False, f"Chunk size too small. Minimum: {Config.MIN_CHUNK_SIZE} bytes"
+    if chunk_size > Config.MAX_CHUNK_SIZE:
+        return False, f"Chunk size too large. Maximum: {Config.MAX_CHUNK_SIZE} bytes"
+    return True, None
+
+def rate_limit_check(
+    ip: str,
+    upload_id: Optional[str] = None,
+    is_new_upload: bool = False
+) -> Tuple[bool, Optional[str], int]:
+    """Check rate limits for uploads and chunks."""
+    if not Config.RATE_LIMIT_ENABLED:
+        return True, None, -1
+
+    window = Config.RATE_LIMIT_WINDOW
+    upload_key = f"ratelimit:uploads:{ip}"
+    chunk_key = f"ratelimit:chunks:{ip}"
+
+    pipe = redis_client.pipeline()
+    now = time.time()
+    window_start = now - window
+
+    if is_new_upload:
+        # Check upload count
+        pipe.zremrangebyscore(upload_key, 0, window_start)
+        pipe.zcard(upload_key)
+        pipe.zadd(upload_key, {str(now): now})
+        pipe.expire(upload_key, window)
+        
+        _, upload_count, *_ = pipe.execute()
+        
+        if upload_count >= Config.RATE_LIMIT_MAX_UPLOADS:
+            reset_in = int(window - (now - float(redis_client.zrange(upload_key, 0, 0)[0])))
+            return False, "Upload rate limit exceeded", reset_in
+    
+    else:
+        # Check chunk upload count
+        pipe.zremrangebyscore(chunk_key, 0, window_start)
+        pipe.zcard(chunk_key)
+        pipe.zadd(chunk_key, {str(now): now})
+        pipe.expire(chunk_key, window)
+        
+        _, chunk_count, *_ = pipe.execute()
+        
+        if chunk_count >= Config.RATE_LIMIT_MAX_CHUNKS:
+            reset_in = int(window - (now - float(redis_client.zrange(chunk_key, 0, 0)[0])))
+            return False, "Chunk upload rate limit exceeded", reset_in
+
+    return True, None, -1
 
 @app.route('/health', methods=['GET'])
 def health_check():

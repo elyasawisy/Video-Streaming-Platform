@@ -3,7 +3,15 @@
 import grpc
 import warnings
 
-from . import video_pb2 as video__pb2
+import os
+import sys
+
+# Add gRPC directory to path for direct execution
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if SCRIPT_DIR not in sys.path:
+    sys.path.append(SCRIPT_DIR)
+
+import video_pb2 as video__pb2
 
 GRPC_GENERATED_VERSION = '1.76.0'
 GRPC_VERSION = grpc.__version__
