@@ -10,13 +10,13 @@
 
 ### Test Environment
 Hardware Specifications:
-- CPU: AMD Ryzen 9 5950X (16 cores)
-- RAM: 64GB DDR4-3600
+- CPU: i5-12400f (6 cores)
+- RAM: 32GB DDR4-2666
 - Storage: NVMe SSD
-- Network: 10Gbps
+- Network: 300Mbs
 
 Software Environment:
-- Ubuntu 22.04 LTS
+- Windows 10 pro 22H2
 - Docker 24.0.5
 - Docker Compose 2.21.0
 
