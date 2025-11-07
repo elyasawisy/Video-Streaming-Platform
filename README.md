@@ -140,7 +140,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed design documentation.
 │   └── shared/           # Common utilities
 └── docs/
     ├── ARCHITECTURE.md   # Detailed system design
-    └── ANALYSIS.pdf      # Performance analysis report
+    └── ANALYSIS.md      # Performance analysis report
 ```
 
 ## Configuration

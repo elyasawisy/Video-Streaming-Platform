@@ -61,4 +61,66 @@ graph TB
 
     CDN1 --> VS
     CDN2 --> VS
+
+┌─────────────┐
+│   Client    │
+└──────┬──────┘
+       │
+       ├──────────┐
+       │          │
+   HTTP/2      Chunked
+   Upload      Upload
+       │          │
+       v          v
+┌──────────────────────┐
+│  Upload Services     │
+│  (Flask + Hypercorn) │
+└──────────┬───────────┘
+           │
+           v
+    ┌──────────────┐
+    │  PostgreSQL  │
+    │  (Metadata)  │
+    └──────────────┘
+           │
+           v
+    ┌──────────────┐
+    │  RabbitMQ    │
+    │  (Job Queue) │
+    └──────┬───────┘
+           │
+       ┌───┴────┐
+       │        │
+    Pull      Push
+   Workers   Workers
+       │        │
+       └───┬────┘
+           │
+           v
+    ┌──────────────┐
+    │  Transcoded  │
+    │  Videos      │
+    └──────┬───────┘
+           │
+           v
+    ┌──────────────────┐
+    │ Streaming Service│
+    │ (Flask + Redis)  │
+    └──────┬───────────┘
+           │
+       ┌───┴────┐
+       │        │
+    Reverse   CDN
+     Proxy    Edge
+    Caching  Servers
+       │        │
+       └───┬────┘
+           │
+           v
+    ┌──────────────┐
+    │    Client    │
+    │   (Viewer)   │
+    └──────────────┘
+
+    gRPC ←──────────→ (Cross-service communication)
 ```
