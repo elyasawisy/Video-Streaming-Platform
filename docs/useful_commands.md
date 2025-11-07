@@ -163,3 +163,23 @@ docker network inspect video-streaming-platform_default
 
 # For production
 ./scripts/deploy.sh prod
+
+# For direct easy start:  
+# 1. Start everything
+docker-compose up -d
+
+# 2. Wait for services to be ready (30 seconds)
+docker-compose ps
+
+# 3. Run component tests
+python src/upload_service/test_upload_http2.py
+python src/chunked_upload_service/test_upload_chunked.py
+python src/cdn_edge/test_cdn.py
+python src/tests/test_integration.py
+
+# 4. Run load tests
+cd load_tests
+k6 run scenarios/*.js
+
+# 5. Clean up when done
+docker-compose down -v
