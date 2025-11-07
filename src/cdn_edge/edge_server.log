@@ -1,0 +1,50 @@
+2025-11-07 16:30:46,184 [INFO] Connected to Redis: redis://redis:6379
+2025-11-07 16:30:46,189 [INFO] Started metrics server on port 9100
+2025-11-07 16:30:46,190 [INFO] [edge-1] Loaded cache: 0 files, 0.00 MB
+2025-11-07 16:30:46,191 [INFO] Starting CDN Edge Server: edge-1 (US-East)
+2025-11-07 16:30:46,191 [INFO] Origin: http://streaming_service:8003
+2025-11-07 16:30:46,191 [INFO] Cache: ./cache (max 10GB)
+2025-11-07 16:30:46,291 [INFO] [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:9000
+ * Running on http://192.168.1.13:9000
+2025-11-07 16:30:46,292 [INFO] [33mPress CTRL+C to quit[0m
+2025-11-07 16:30:46,299 [INFO]  * Restarting with stat
+2025-11-07 16:30:46,862 [INFO] Connected to Redis: redis://localhost:6379
+2025-11-07 16:30:46,867 [INFO] Started metrics server on port 9100
+2025-11-07 16:30:46,869 [INFO] [edge-1] Loaded cache: 0 files, 0.00 MB
+2025-11-07 16:30:46,870 [INFO] Starting CDN Edge Server: edge-1 (US-East)
+2025-11-07 16:30:46,870 [INFO] Origin: http://streaming_service:8003
+2025-11-07 16:30:46,870 [INFO] Cache: ./cache (max 10GB)
+2025-11-07 16:30:46,889 [WARNING]  * Debugger is active!
+2025-11-07 16:30:46,893 [INFO]  * Debugger PIN: 569-154-839
+2025-11-07 16:35:18,940 [INFO]  * Detected change in 'E:\\vscode gsg\\final_backend\\src\\cdn_edge\\test_cdn.py', reloading
+2025-11-07 16:35:18,982 [INFO]  * Restarting with stat
+2025-11-07 16:35:19,601 [INFO] Connected to Redis: redis://localhost:6379
+2025-11-07 16:35:19,606 [INFO] Started metrics server on port 9100
+2025-11-07 16:35:19,607 [INFO] [edge-1] Loaded cache: 0 files, 0.00 MB
+2025-11-07 16:35:19,609 [INFO] Starting CDN Edge Server: edge-1 (US-East)
+2025-11-07 16:35:19,609 [INFO] Origin: http://streaming_service:8003
+2025-11-07 16:35:19,610 [INFO] Cache: ./cache (max 10GB)
+2025-11-07 16:35:19,629 [WARNING]  * Debugger is active!
+2025-11-07 16:35:19,632 [INFO]  * Debugger PIN: 569-154-839
+2025-11-07 16:35:42,821 [INFO]  * Detected change in 'E:\\vscode gsg\\final_backend\\src\\cdn_edge\\test_cdn.py', reloading
+2025-11-07 16:35:42,870 [INFO]  * Restarting with stat
+2025-11-07 16:35:43,780 [INFO] Connected to Redis: redis://localhost:6379
+2025-11-07 16:35:43,788 [INFO] Started metrics server on port 9100
+2025-11-07 16:35:43,792 [INFO] [edge-1] Loaded cache: 0 files, 0.00 MB
+2025-11-07 16:35:43,794 [INFO] Starting CDN Edge Server: edge-1 (US-East)
+2025-11-07 16:35:43,796 [INFO] Origin: http://streaming_service:8003
+2025-11-07 16:35:43,796 [INFO] Cache: ./cache (max 10GB)
+2025-11-07 16:35:43,823 [WARNING]  * Debugger is active!
+2025-11-07 16:35:43,826 [INFO]  * Debugger PIN: 569-154-839
+2025-11-07 16:37:14,025 [INFO]  * Detected change in 'E:\\vscode gsg\\final_backend\\src\\cdn_edge\\test_cdn.py', reloading
+2025-11-07 16:37:14,071 [INFO]  * Restarting with stat
+2025-11-07 16:37:14,625 [INFO] Connected to Redis: redis://localhost:6379
+2025-11-07 16:37:14,629 [INFO] Started metrics server on port 9100
+2025-11-07 16:37:14,631 [INFO] [edge-1] Loaded cache: 0 files, 0.00 MB
+2025-11-07 16:37:14,632 [INFO] Starting CDN Edge Server: edge-1 (US-East)
+2025-11-07 16:37:14,632 [INFO] Origin: http://streaming_service:8003
+2025-11-07 16:37:14,632 [INFO] Cache: ./cache (max 10GB)
+2025-11-07 16:37:14,649 [WARNING]  * Debugger is active!
+2025-11-07 16:37:14,652 [INFO]  * Debugger PIN: 569-154-839
