@@ -1,6 +1,5 @@
 # docker-compose.override.yml
 # Override file for development environment
-version: '3.8'
 
 services:
   postgres:

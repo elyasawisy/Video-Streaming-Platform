@@ -16,8 +16,21 @@ if config.config_file_name is not None:
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
 
-# Import the models we want to work with
-from src.shared.database import Base
+# Import the models we want to work with. Avoid import-time DB connections.
+target_metadata = None
+try:
+    # Prefer the upload_service models which declare Base
+    from src.upload_service.models import Base  # type: ignore
+    target_metadata = Base.metadata
+except Exception:
+    try:
+        # Fallback: try streaming service models which may re-export Video
+        from src.streaming_service.models import Video  # type: ignore
+        # If models are present but no Base, leave target_metadata as None
+        target_metadata = None
+    except Exception:
+        # Give up gracefully; alembic can still run without target_metadata
+        target_metadata = None
 
 # this is the Alembic Config object
 config = context.config
@@ -28,7 +41,7 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 # add your model's MetaData object here
-target_metadata = Base.metadata
+# target_metadata is set above based on available models (or None)
 
 # other values from the config, defined by the needs of env.py,
 # can be acquired:

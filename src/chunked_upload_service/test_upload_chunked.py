@@ -130,9 +130,10 @@ class ChunkedUploadTester:
                             if response.status_code == 200:
                                 result = response.json()
                                 uploaded += 1
+                                print(f"Chunk {chunk_num} upload result: {result}")
                                 
                                 if chunk_num % 10 == 0 or chunk_num == total_chunks:
-                                    progress = result['progress_percent']
+                                    progress = result.get('progress_percent', 0)
                                     print(f"   Progress: {progress:.1f}% ({chunk_num}/{total_chunks})")
                                 break
                             else:

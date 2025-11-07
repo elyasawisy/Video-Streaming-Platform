@@ -15,7 +15,8 @@ from werkzeug.utils import secure_filename
 import pika
 import redis
 from sqlalchemy import create_engine, Column, String, Integer, DateTime, BigInteger, Enum, Boolean, event
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy import create_engine, Column, String, Integer, DateTime, BigInteger, Enum, Boolean, event, ForeignKey, text, inspect
+from sqlalchemy.ext.declarative import declarative_base 
 from sqlalchemy.orm import sessionmaker, scoped_session
 from sqlalchemy.pool import QueuePool
 import enum
@@ -173,23 +174,47 @@ class ChunkManager:
         )
         
         # Store chunk metadata in Redis
-        self.redis.hset(
-            chunk_key,
-            mapping={
-                'size': metadata.size,
-                'md5': metadata.md5,
-                'uploaded_at': metadata.uploaded_at.isoformat(),
-                'retry_count': metadata.retry_count
-            }
-        )
+        chunk_data = {
+            'size': str(metadata.size),
+            'md5': metadata.md5,
+            'uploaded_at': metadata.uploaded_at.isoformat(),
+            'retry_count': str(metadata.retry_count)
+        }
+        logger.info(f"Storing chunk metadata for {chunk_key}: {chunk_data}")
+        
+        # Clear any existing data
+        self.redis.delete(chunk_key)
+        
+        # Set new data
+        for k, v in chunk_data.items():
+            self.redis.hset(chunk_key, k, v)
+            
+        # Verify it was stored correctly
+        stored_data = self.redis.hgetall(chunk_key)
+        logger.info(f"Stored chunk data: {stored_data}")
+        
+        # Set expiry
         self.redis.expire(chunk_key, Config.UPLOAD_EXPIRY)
 
         # Update upload progress
         upload_key = self._get_upload_key(upload_id)
+        
+        # Debug logging
+        before_data = self.redis.hgetall(upload_key)
+        logger.info(f"Before pipeline - Redis data for {upload_key}: {before_data}")
+        
         pipe = self.redis.pipeline()
         pipe.hincrby(upload_key, 'uploaded_chunks', 1)
         pipe.hincrby(upload_key, 'uploaded_bytes', chunk_size)
         pipe.execute()
+        
+        # Verify the values were set correctly
+        after_data = self.redis.hgetall(upload_key)
+        logger.info(f"After pipeline - Redis data for {upload_key}: {after_data}")
+        
+        # Double-check the progress
+        progress = self.get_upload_progress(upload_id, total_chunks=1, total_size=chunk_size)
+        logger.info(f"Progress check after chunk upload: {progress}")
 
     def get_chunk_metadata(
         self,
@@ -200,15 +225,39 @@ class ChunkManager:
         chunk_key = self._get_chunk_key(upload_id, chunk_number)
         data = self.redis.hgetall(chunk_key)
         
+        logger.info(f"Got Redis data for chunk {chunk_number}: {data}")
         if not data:
             return None
+        # Redis client may return keys/values as bytes or strings depending on decode_responses.
+        def _get(d, k):
+            # try string key first, then bytes
+            if k in d:
+                return d[k]
+            kb = k.encode()
+            return d.get(kb)
 
+        size_val = _get(data, 'size')
+        md5_val = _get(data, 'md5')
+        uploaded_at_val = _get(data, 'uploaded_at')
+        retry_val = _get(data, 'retry_count')
+
+        # decode bytes if necessary
+        if isinstance(size_val, bytes):
+            size_val = size_val.decode()
+        if isinstance(md5_val, bytes):
+            md5_val = md5_val.decode()
+        if isinstance(uploaded_at_val, bytes):
+            uploaded_at_val = uploaded_at_val.decode()
+        if isinstance(retry_val, bytes):
+            retry_val = retry_val.decode()
+
+            logger.info(f"Processed chunk metadata - size:{size_val}, md5:{md5_val}, uploaded_at:{uploaded_at_val}, retry:{retry_val}")
         return ChunkMetadata(
             number=chunk_number,
-            size=int(data[b'size']),
-            md5=data[b'md5'].decode(),
-            uploaded_at=datetime.fromisoformat(data[b'uploaded_at'].decode()),
-            retry_count=int(data[b'retry_count'])
+            size=int(size_val),
+            md5=md5_val,
+            uploaded_at=datetime.fromisoformat(uploaded_at_val),
+            retry_count=int(retry_val)
         )
 
     def get_upload_progress(
@@ -221,27 +270,86 @@ class ChunkManager:
         upload_key = self._get_upload_key(upload_id)
         data = self.redis.hgetall(upload_key)
 
-        uploaded_chunks = int(data.get(b'uploaded_chunks', 0))
-        uploaded_bytes = int(data.get(b'uploaded_bytes', 0))
+        # Handle redis responses that may be bytes or strings
+        def _hget(d, k, default=0):
+            logger.info(f"Getting value for key '{k}' from {d}")
+            
+            # If no data, return default
+            if not d:
+                logger.info(f"No data found, returning default {default}")
+                return default
+                
+            # Try string key first
+            key = k if isinstance(k, str) else k.decode() if isinstance(k, bytes) else str(k)
+            v = d.get(key)
+            
+            # If not found and key is string, try bytes
+            if v is None and isinstance(key, str):
+                try:
+                    v = d.get(key.encode())
+                except Exception as e:
+                    logger.error(f"Error trying encoded key: {e}")
+                    v = None
+                    
+            # Return default if nothing found
+            if v is None:
+                logger.info(f"No value found for key '{k}', returning default {default}")
+                return default
+                
+            # Decode bytes if needed
+            if isinstance(v, bytes):
+                try:
+                    v = v.decode()
+                    logger.info(f"Decoded bytes value to: {v}")
+                except Exception as e:
+                    logger.error(f"Error decoding bytes: {e}")
+                    return default
+                    
+            # Convert numeric strings to int
+            if isinstance(v, str) and v.isdigit():
+                v = int(v)
+                
+            logger.info(f"Returning value: {v}")
+            return v
 
+        # Get counts from Redis
+        uploaded_chunks = _hget(data, 'uploaded_chunks', 0)  # Already converted to int in _hget
+        uploaded_chunks = int(_hget(data, 'uploaded_chunks', '0'))  # Ensure conversion to int
+        uploaded_bytes = int(_hget(data, 'uploaded_bytes', '0'))    # Ensure conversion to int
+
+        logger.info(f"Got Redis data for upload {upload_id}: {data}")
         # Get list of missing chunks
         all_chunks = set(range(1, total_chunks + 1))
         uploaded_chunk_list = []
         
+        logger.info(f"Read counts: chunks={uploaded_chunks}, bytes={uploaded_bytes}")
         for i in all_chunks:
             if self.redis.exists(self._get_chunk_key(upload_id, i)):
                 uploaded_chunk_list.append(i)
 
         missing_chunks = sorted(all_chunks - set(uploaded_chunk_list))
+        logger.info(f"Missing chunks: {missing_chunks}")
 
-        return {
+        # Calculate progress
+        progress = float(uploaded_bytes / total_size * 100) if total_size > 0 else 0.0
+        for i in all_chunks:
+            if i in uploaded_chunk_list:
+                logger.info(f"Found chunk {i} in Redis")
+            else:
+                logger.info(f"Missing chunk {i}")
+        logger.info(f"Calculated progress: {progress}%")
+
+        logger.info(f"Missing chunks: {missing_chunks}")
+        result = {
             'total_chunks': total_chunks,
             'uploaded_chunks': uploaded_chunks,
             'missing_chunks': missing_chunks,
             'total_size': total_size,
             'uploaded_bytes': uploaded_bytes,
-            'progress_percent': (uploaded_bytes / total_size * 100) if total_size > 0 else 0
+            'progress_percent': progress
         }
+        logger.info(f"Returning progress data: {result}")
+        return result
 
     def cleanup_expired_upload(self, upload_id: str) -> None:
         """Clean up expired upload data and chunks."""
@@ -348,15 +456,18 @@ class ChunkedUpload(Base):
     __tablename__ = 'chunked_uploads'
     
     id = Column(String(36), primary_key=True)
-    video_id = Column(String(36), nullable=False)
+
+    video_id = Column(String(36), ForeignKey('videos.id', ondelete='CASCADE'), nullable=False)
     filename = Column(String(255), nullable=False)
     file_size = Column(BigInteger, nullable=False)
     total_chunks = Column(Integer, nullable=False)
+    chunk_size = Column(Integer, nullable=False, default=1048576)  # Default 1MB chunk size
     uploaded_chunks = Column(Integer, default=0)
     is_complete = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     completed_at = Column(DateTime, nullable=True)
     expires_at = Column(DateTime, nullable=False)
+    status = Column(Enum('pending', 'uploading', 'completed', 'failed', 'expired', name='upload_status'), nullable=False, default='pending')
     
     def to_dict(self):
         return {
@@ -381,13 +492,27 @@ class UploadMetrics(Base):
     file_size = Column(BigInteger, nullable=False)
     upload_duration = Column(Integer, nullable=False)
     throughput = Column(Integer, nullable=False)
-    retry_count = Column(Integer, default=0)
+    retry_count = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 # Database initialization
 engine = create_engine(Config.DATABASE_URL, pool_pre_ping=True)
-Base.metadata.create_all(engine)
 SessionLocal = sessionmaker(bind=engine)
+
+# Create tables if they don't exist
+Base.metadata.create_all(engine)
+
+# Ensure the upload_metrics table has the retry_count column (handle existing DBs without migrations)
+try:
+    inspector = inspect(engine)
+    if 'upload_metrics' in inspector.get_table_names():
+        cols = [c['name'] for c in inspector.get_columns('upload_metrics')]
+        if 'retry_count' not in cols:
+            with engine.connect() as conn:
+                conn.execute(text('ALTER TABLE upload_metrics ADD COLUMN retry_count INTEGER DEFAULT 0 NOT NULL'))
+                conn.commit()
+except Exception as e:
+    logger.warning(f"Could not ensure retry_count column exists: {e}")
 
 # Flask App
 app = Flask(__name__)
@@ -442,8 +567,13 @@ def publish_transcode_job(video_data):
 
 def is_chunk_uploaded(upload_id: str, chunk_number: int) -> bool:
     """Check if a chunk has been uploaded."""
-    metadata = chunk_manager.get_chunk_metadata(upload_id, chunk_number)
-    return metadata is not None
+    chunk_key = f"chunk:{upload_id}:{chunk_number}"
+    exists = redis_client.exists(chunk_key)
+    logger.info(f"Checking if chunk {chunk_number} exists for upload {upload_id}: {exists}")
+    if exists:
+        data = redis_client.hgetall(chunk_key)
+        logger.info(f"Chunk data: {data}")
+    return exists
 
 def get_uploaded_chunks(upload_id: str, total_chunks: int) -> List[int]:
     """Get list of uploaded chunk numbers."""
@@ -626,6 +756,8 @@ def initialize_upload():
             uploader_id=data.get('uploader_id', 'anonymous')
         )
         db.add(video)
+        # Ensure the video row is flushed to the DB so FK constraints succeed
+        db.flush()
         
         # Create chunked upload record
         chunked_upload = ChunkedUpload(
@@ -707,12 +839,21 @@ def upload_chunk():
         # Check if chunk already uploaded
         if is_chunk_uploaded(upload_id, chunk_number):
             db.close()
+            # Still need to get progress even for duplicates
+            progress = chunk_manager.get_upload_progress(
+                    upload_id,
+                    upload.total_chunks,
+                    upload.file_size
+                )
             return jsonify({
-                'success': True,
-                'message': 'Chunk already uploaded',
-                'chunk_number': chunk_number,
-                'duplicate': True
-            }), 200
+                    'success': True,
+                    'message': 'Chunk already uploaded',
+                    'chunk_number': chunk_number,
+                    'duplicate': True,
+                    'uploaded_chunks': progress['uploaded_chunks'],
+                    'total_chunks': progress['total_chunks'],
+                    'progress_percent': progress['progress_percent']
+                }), 200
         
         # Save chunk
         chunk_dir = os.path.join(Config.CHUNKS_DIR, upload_id)
@@ -811,12 +952,8 @@ def complete_upload():
             os.remove(final_path)
             raise Exception(f"File size mismatch: expected {upload.file_size}, got {actual_size}")
         
-        # Calculate hash
-        file_hash = calculate_file_hash(final_path)
-        
-        # Update records
-        video.file_hash = file_hash
-        video.status = VideoStatus.UPLOADED
+        # Calculate file hash and update video record
+        video.file_hash = calculate_file_hash(final_path)
         video.uploaded_at = datetime.utcnow()
         if 'title' in data:
             video.title = data['title']
