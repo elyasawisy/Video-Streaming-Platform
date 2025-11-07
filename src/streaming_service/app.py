@@ -8,6 +8,7 @@ Features:
 - Efficient chunk serving
 """
 import os
+import sys
 import re
 from flask import Flask, request, Response, send_file, jsonify
 from flask_cors import CORS
@@ -16,8 +17,12 @@ import redis
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from streaming_service.config import Config
-from streaming_service.models import Video, VideoStatus
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if SCRIPT_DIR not in sys.path:
+    sys.path.append(SCRIPT_DIR)
+
+from config import Config
+from models import Video, VideoStatus
 
 # Flask App
 app = Flask(__name__)
