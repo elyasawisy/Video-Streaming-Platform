@@ -62,6 +62,45 @@ graph TB
     CDN1 --> VS
     CDN2 --> VS
 
+
+Service-to-Service Communication:
+gRPC: Used for high-performance internal service communication
+REST APIs: For external client communication
+Message Queues: For asynchronous task processing
+
+Upload Patterns
+HTTP/2 Streaming: Direct streaming with multiplexing
+Chunked Upload: Fault-tolerant parallel uploads with resume capability
+
+Worker Patterns:
+
+Pull-based Workers: Workers poll for jobs from RabbitMQ
+Push-based Workers: RabbitMQ pushes jobs to subscribed workers
+
+Content Delivery Patterns:
+
+Edge Caching: Multiple edge servers for geographical distribution
+Reverse Proxy Caching: Local cache layer for optimization
+
+
+
+Upload Flow:
+
+Client → Load Balancer → Upload Service → PostgreSQL (metadata)
+                                      → Redis (progress)
+                                      → Storage (files)
+                                      → RabbitMQ (transcoding jobs)
+
+
+Transcoding Flow:
+
+RabbitMQ → Workers (Pull/Push) → Storage → CDN Edge Servers
+
+
+Streaming Flow:
+
+Client → Load Balancer → CDN Edge → Redis Cache → Origin Storage
+
 ┌─────────────┐
 │   Client    │
 └──────┬──────┘
